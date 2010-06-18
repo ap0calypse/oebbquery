@@ -1,0 +1,95 @@
+#!/usr/bin/perl
+use strict;
+use warnings;
+use LWP::UserAgent;
+
+# name:     oebbquery
+# author:   ap0calypse (ap0calypse@agitatio.org)
+# version:  2010-06-17
+# purpose:  does a web-query on the website of the OEBB (www.oebb.at) to 
+#           look up a connection from A to B. 
+# command:  ./oebbquery [FROM] [TO]
+
+my $ua = LWP::UserAgent->new;
+
+# get the locations from the commandline
+my ($from, $to) = @ARGV;
+
+# we use current time and date
+my $whendate = sprintf("%s.%s.%s", (localtime)[3], (localtime)[4] + 1, (localtime)[5] + 1900);
+my $whentime = sprintf("%s:%s", (localtime)[2], (localtime)[1]);
+
+# temporary file for html-output
+my $TMPFILE = "/tmp/oebbquery.$$";
+open my $TMPFD, "> $TMPFILE" or die "$TMPFILE: $!";
+
+# comment this out and change it if you need a proxy-server
+#$ua->proxy('http', 'http://user:passwd@yourproxy:8080');
+
+# here is the main query
+my $response = $ua->get("http://fahrplan.oebb.at/bin/query.exe/dn?S=$from" .
+                        "&Z=$to&start=1&time=$whentime&ld=oebb&timesel=depart&REQ0" .
+                        "JourneyDate=$whendate");
+
+
+
+if ($response->is_success) {
+    print $TMPFD $response->decoded_content;
+}
+else {
+    die $response->status_line;
+}
+
+close $TMPFD;
+
+# re-open the file to parse it
+open $TMPFD, "< $TMPFILE" or die "$TMPFILE: $!";
+
+print "Connections from $from to $to:\n\n"; 
+print "Departure  Arrival  Duration  Changes  Train(s)\n";
+
+# my array of hashes for the train information and the needed variables
+my @AoH = ({});
+my ($deptime, $arrtime, $dur, $train, $changes);
+my $run = 0;
+my $i = 1;
+my $uninteresting = 150;        # first 150 lines are uninteresting
+
+
+while (my $line = <$TMPFD>) {
+    $i++;
+    next if $i < $uninteresting;
+    last if $line =~ m/.*Hinweise zur Prognose.*/gms;
+    if($line =~ m/.*td headers="hafasOVStop".*<td class="sepline">(\d{2}:\d{2})<br \/>(\d{2}:\d{2}).*/gms) {
+        $deptime = $1;
+        $arrtime = $2;
+        $AoH[$run] = { 'id' => $run, 'dep' => $deptime, 'arr' => $arrtime };
+    }
+    if ($line =~ m/^(\d{1,2}:\d{2}).*$/gms) {
+        $dur = sprintf("%5s", $1);
+        ${$AoH[$run]}{'dur'} = $dur;
+    }
+    if ($line =~ m/^<td headers="hafasOVChanges".+>(\d)+<\/td.*$/gms) {
+        $changes = $1;
+        ${$AoH[$run]}{'chg'} = $changes;
+    }
+    if ($line =~ m/^(?:<img src="\/img\/vs_oebb\/(\w+)_pic.gif".*\/>)+/gms) {
+        my @trains = split /></, $line;
+        for (@trains) {
+            if (m/(?:img src="\/img\/vs_oebb\/(\w+)_pic.gif".*\/)+/gms) {
+                $train .= "$1 ";
+            }
+        }
+        ${$AoH[$run]}{'train'} = $train;
+        $train = "";
+        $run++;
+    }
+}
+close $TMPFD;
+
+# main output
+for my $hashref (@AoH) {
+    print $$hashref{'dep'}, " " x 6, $$hashref{'arr'}, " " x 4, $$hashref{'dur'}, " " x 5, $$hashref{'chg'}, " " x 8, $$hashref{'train'}, "\n";
+}
+# delete the tempfile
+unlink $TMPFILE;
